@@ -28,6 +28,7 @@
 #endif
 
 #include "goodix_ts_core.h"
+#include "goodix_m2481.h"
 
 #define GOODIX_DEFAULT_CFG_NAME		"goodix_cfg_group.cfg"
 #define GOOIDX_INPUT_PHYS			"goodix_ts/input0"
@@ -986,6 +987,10 @@ static int goodix_parse_dt_resolution(struct device_node *node,
 		swap(board_data->panel_max_x, board_data->panel_max_y);
 		ts_info("Panel max x and max y inverted\n");
 	}
+	if (goodix_m2481_is_device(node)) {
+		board_data->panel_max_x *= GOODIX_M2481_COORD_SCALE;
+		board_data->panel_max_y *= GOODIX_M2481_COORD_SCALE;
+	}
 
 	ret = of_property_read_u32(node, "goodix,panel-max-w",
 				&board_data->panel_max_w);
@@ -1480,7 +1485,8 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 	core_data->input_dev = input_dev;
 	input_set_drvdata(input_dev, core_data);
 
-	input_dev->name = GOODIX_CORE_DRIVER_NAME;
+	input_dev->name = goodix_m2481_is_device(core_data->bus->dev->of_node) ?
+		GOODIX_M2481_DEVICE_NAME : GOODIX_CORE_DRIVER_NAME;
 	input_dev->phys = GOOIDX_INPUT_PHYS;
 	input_dev->id.product = 0xDEAD;
 	input_dev->id.vendor = 0xBEEF;
@@ -1501,6 +1507,9 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 			     0, ts_bdata->panel_max_y, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR,
 			     0, ts_bdata->panel_max_w, 0, 0);
+	if (goodix_m2481_is_device(core_data->bus->dev->of_node))
+		input_set_abs_params(input_dev, ABS_MT_WIDTH_MAJOR,
+				     0, ts_bdata->panel_max_w, 0, 0);
 #ifdef INPUT_TYPE_B_PROTOCOL
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 7, 0)
 	input_mt_init_slots(input_dev, GOODIX_MAX_TOUCH,
@@ -1513,6 +1522,9 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 	input_set_capability(input_dev, EV_KEY, KEY_POWER);
 	input_set_capability(input_dev, EV_KEY, KEY_WAKEUP);
 	input_set_capability(input_dev, EV_KEY, KEY_GOTO);
+	if (goodix_m2481_is_device(core_data->bus->dev->of_node))
+		input_set_capability(input_dev, EV_KEY,
+				     GOODIX_M2481_DOUBLE_TAP_KEY);
 
 	r = input_register_device(input_dev);
 	if (r < 0) {
@@ -1751,6 +1763,7 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 {
 	struct goodix_ext_module *ext_module, *next;
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
+	bool psy_locked = false;
 	int ret;
 
 	if (core_data->init_stage < CORE_INIT_STAGE2 ||
@@ -1758,6 +1771,7 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 		return 0;
 
 	ts_info("Suspend start");
+	psy_locked = goodix_m2481_charge_lock(core_data);
 	atomic_set(&core_data->suspended, 1);
 	/* disable irq */
 	hw_ops->irq_enable(core_data, false);
@@ -1812,6 +1826,8 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 
 out:
 	goodix_ts_release_connects(core_data);
+	if (psy_locked)
+		goodix_m2481_charge_unlock(core_data);
 	ts_info("Suspend end");
 	return 0;
 }
@@ -1824,6 +1840,7 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 {
 	struct goodix_ext_module *ext_module, *next;
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
+	bool psy_locked = false;
 	int ret;
 
 	if (core_data->init_stage < CORE_INIT_STAGE2 ||
@@ -1831,6 +1848,7 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 		return 0;
 
 	ts_info("Resume start");
+	psy_locked = goodix_m2481_charge_lock(core_data);
 	atomic_set(&core_data->suspended, 0);
 	hw_ops->irq_enable(core_data, false);
 
@@ -1874,6 +1892,7 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 	mutex_unlock(&goodix_modules.mutex);
 
 out:
+	goodix_m2481_charge_resume(core_data, psy_locked);
 	/* enable irq */
 	hw_ops->irq_enable(core_data, true);
 	/* open esd */
@@ -2073,8 +2092,7 @@ skip_goodix_ts_irq_setup:
 	/* create procfs files */
 	goodix_ts_procfs_init(cd);
 #ifdef GOODIX_SUSPEND_GESTURE_ENABLE
-	/* gesture init */
-	gesture_module_init();
+	gesture_module_init(cd);
 #endif
 	/* inspect init */
 	inspect_module_init();
@@ -2192,6 +2210,12 @@ skip_to_stage2_init:
 		goto uninit_fw;
 	}
 	cd->init_stage = CORE_INIT_STAGE2;
+	if (goodix_m2481_is_device(cd->bus->dev->of_node) &&
+	    goodix_get_touch_type(cd->bus->dev->of_node) == PRIMARY_TOUCH_IDX) {
+		ret = goodix_m2481_charge_init(cd);
+		if (ret)
+			ts_err("failed to register M2481 charger notifier: %d", ret);
+	}
 	mutex_unlock(&goodix_later_init_tmutex);
 	return 0;
 
@@ -2509,6 +2533,7 @@ static int goodix_ts_probe(struct platform_device *pdev)
 	}
 
 	core_data->bus = bus_interface;
+	mutex_init(&core_data->cmd_lock);
 
 	if (IS_ENABLED(CONFIG_OF) && bus_interface->dev->of_node) {
 		/* parse devicetree property */
@@ -2521,6 +2546,11 @@ static int goodix_ts_probe(struct platform_device *pdev)
 #if defined(CONFIG_DRM)
 		of_property_read_string(node, "qcom,touch-environment",
 				&core_data->touch_environment);
+		if (goodix_m2481_is_device(node) &&
+		    !core_data->touch_environment &&
+		    !of_property_read_bool(node, "goodix,qts_en"))
+			of_property_read_string(node, "goodix,touch-environment",
+						&core_data->touch_environment);
 #endif
 	} else {
 		ts_err("no valid device tree node found");
@@ -2611,14 +2641,17 @@ static int goodix_ts_remove(struct platform_device *pdev)
 	struct goodix_ts_core *core_data = platform_get_drvdata(pdev);
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
 	struct goodix_ts_esd *ts_esd = &core_data->ts_esd;
+	bool m2481 = goodix_m2481_is_device(core_data->bus->dev->of_node);
 
+	if (m2481)
+		goodix_m2481_charge_exit(core_data);
 	goodix_ts_unregister_notifier(&core_data->ts_notifier);
 	goodix_tools_exit();
 
 	if (core_data->init_stage >= CORE_INIT_STAGE2) {
-	#ifdef GOODIX_SUSPEND_GESTURE_ENABLE
+#ifdef GOODIX_SUSPEND_GESTURE_ENABLE
 		gesture_module_exit();
-	#endif
+#endif
 		inspect_module_exit();
 		hw_ops->irq_enable(core_data, false);
 
@@ -2656,6 +2689,7 @@ static const struct dev_pm_ops dev_pm_ops = {
 static const struct platform_device_id ts_core_ids[] = {
 	{.name = GOODIX_CORE_DEVICE_NAME},
 	{.name = GOODIX_CORE_DEVICE_2_NAME},
+	{.name = GOODIX_M2481_DEVICE_NAME},
 	{}
 };
 MODULE_DEVICE_TABLE(platform, ts_core_ids);

@@ -28,6 +28,7 @@ module_entry(
             "goodix_berlin_driver/goodix_brl_i2c.c",
             "goodix_berlin_driver/goodix_brl_spi.c",
             "goodix_berlin_driver/goodix_cfg_bin.c",
+            "goodix_berlin_driver/goodix_m2481.c",
             "goodix_berlin_driver/goodix_ts_core.c",
             "goodix_berlin_driver/goodix_ts_gesture.c",
             "goodix_berlin_driver/goodix_ts_inspect.c",

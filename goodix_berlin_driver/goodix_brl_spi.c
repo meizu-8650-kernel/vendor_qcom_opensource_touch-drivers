@@ -20,6 +20,7 @@
 #include <linux/version.h>
 
 #include "goodix_ts_core.h"
+#include "goodix_m2481.h"
 #define TS_DRIVER_NAME		"gtx8_spi"
 
 #define SPI_TRANS_PREFIX_LEN    1
@@ -232,6 +233,8 @@ static int goodix_spi_probe(struct spi_device *spi)
 
 	if (idx)
 		goodix_pdev->name = GOODIX_CORE_DEVICE_2_NAME;
+	else if (goodix_m2481_is_device(spi->dev.of_node))
+		goodix_pdev->name = GOODIX_M2481_DEVICE_NAME;
 	else
 		goodix_pdev->name = GOODIX_CORE_DEVICE_NAME;
 
@@ -279,6 +282,7 @@ err_pdev:
 
 #ifdef CONFIG_OF
 static const struct of_device_id spi_matchs[] = {
+	{.compatible = GOODIX_M2481_COMPATIBLE,},
 	{.compatible = "goodix,gt9897S",},
 	{.compatible = "goodix,gt9897T",},
 	{.compatible = "goodix,gt9966S",},

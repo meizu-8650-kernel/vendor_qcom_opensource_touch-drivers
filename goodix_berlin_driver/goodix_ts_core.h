@@ -26,7 +26,9 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/platform_device.h>
+#include <linux/workqueue.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/completion.h>
@@ -42,6 +44,7 @@
 #include <linux/i2c.h>
 #include <linux/spi/spi.h>
 #include "../qts/qts_core_common.h"
+#include "goodix_m2481.h"
 
 #define GOODIX_CORE_DRIVER_NAME			"goodix_ts"
 #define GOODIX_PEN_DRIVER_NAME			"goodix_ts,pen"
@@ -67,6 +70,8 @@
 
 #define TS_DEFAULT_FIRMWARE				"goodix_firmware.bin"
 #define TS_DEFAULT_CFG_BIN				"goodix_cfg_group.bin"
+
+#define GOODIX_SUSPEND_GESTURE_ENABLE
 
 enum GOODIX_GESTURE_TYP {
 	GESTURE_SINGLE_TAP = (1 << 0),
@@ -507,6 +512,7 @@ struct goodix_ts_core {
 
 	atomic_t irq_enabled;
 	atomic_t suspended;
+	struct mutex cmd_lock; /* serializes firmware commands */
 	/* when this flag is true, driver should not clean the sync flag */
 	bool tools_ctrl_sync;
 
@@ -538,6 +544,8 @@ struct goodix_ts_core {
 #endif
 	bool qts_en;
 	struct mutex tui_transition_lock;
+
+	struct goodix_m2481_state m2481;
 };
 
 /* external module structures */
@@ -691,7 +699,7 @@ void goodix_fw_update_uninit(void);
 int goodix_do_fw_update(struct goodix_ic_config *ic_config, int mode);
 
 int goodix_get_ic_type(struct device_node *node);
-int gesture_module_init(void);
+int gesture_module_init(struct goodix_ts_core *cd);
 void gesture_module_exit(void);
 int inspect_module_init(void);
 void inspect_module_exit(void);

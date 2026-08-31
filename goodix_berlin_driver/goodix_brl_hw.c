@@ -16,6 +16,7 @@
   *
   */
 #include "goodix_ts_core.h"
+#include "goodix_m2481.h"
 
 /* berlin_A SPI mode setting */
 #define GOODIX_SPI_MODE_REG			0xC900
@@ -208,6 +209,8 @@ static int brl_reset_after(struct goodix_ts_core *cd)
 #define REG_RESUME_CURRENT 30000
 #define REG_RESUME_MIN_VOLTAGE 3200000
 #define REG_RESUME_MAX_VOLTAGE 3200000
+#define M2481_RESUME_MIN_VOLTAGE 0
+#define M2481_RESUME_MAX_VOLTAGE 3000000
 
 static int brl_power_on(struct goodix_ts_core *cd, bool on)
 {
@@ -215,6 +218,13 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 	int iovdd_gpio = cd->board_data.iovdd_gpio;
 	int avdd_gpio = cd->board_data.avdd_gpio;
 	int reset_gpio = cd->board_data.reset_gpio;
+	int avdd_min_uv = REG_RESUME_MIN_VOLTAGE;
+	int avdd_max_uv = REG_RESUME_MAX_VOLTAGE;
+
+	if (goodix_m2481_is_device(cd->bus->dev->of_node)) {
+		avdd_min_uv = M2481_RESUME_MIN_VOLTAGE;
+		avdd_max_uv = M2481_RESUME_MAX_VOLTAGE;
+	}
 
 	if (on) {
 		if (iovdd_gpio > 0) {
@@ -243,8 +253,8 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 					ts_err("vdd regulator set_load failed ret=%d", ret);
 					return ret;
 				}
-				ret = regulator_set_voltage(cd->avdd, REG_RESUME_MIN_VOLTAGE,
-							REG_RESUME_MAX_VOLTAGE);
+				ret = regulator_set_voltage(cd->avdd, avdd_min_uv,
+							    avdd_max_uv);
 				if (ret) {
 					ts_err("vdd regulator set_vtg failed ret=%d", ret);
 					return ret;
@@ -291,35 +301,17 @@ power_off:
 #define GOODIX_SLEEP_CMD	0x84
 int brl_suspend(struct goodix_ts_core *cd)
 {
-#ifdef GOODIX_SUSPEND_GESTURE_ENABLE
-	struct goodix_ts_cmd sleep_cmd;
+	u32 cmd_reg = cd->ic_info.misc.cmd_addr;
+	u8 sleep_cmd[] = { 0x00, 0x00, 0x04, GOODIX_SLEEP_CMD,
+			   0x88, 0x00 };
 
-	sleep_cmd.cmd = GOODIX_SLEEP_CMD;
-	sleep_cmd.len = 4;
-	if (cd->hw_ops->send_cmd(cd, &sleep_cmd))
-		ts_err("failed send sleep cmd");
-#else
-	if (cd->hw_ops->power_on(cd, 0))
-		ts_err("failed power off");
-#endif
-	return 0;
+	return cd->hw_ops->write(cd, cmd_reg, sleep_cmd,
+				 sizeof(sleep_cmd));
 }
 
 int brl_resume(struct goodix_ts_core *cd)
 {
-	int ret = 0;
-
-#ifdef GOODIX_SUSPEND_GESTURE_ENABLE
-	ret = cd->hw_ops->reset(cd, GOODIX_NORMAL_RESET_DELAY_MS);
-#else
-	ret = cd->hw_ops->power_on(cd, 1);
-	if (ret) {
-		ts_err("failed power on");
-		return ret;
-	}
-#endif
-
-	return ret;
+	return cd->hw_ops->reset(cd, GOODIX_NORMAL_RESET_DELAY_MS);
 }
 
 #define GOODIX_GESTURE_CMD_BA	0x12
@@ -327,6 +319,10 @@ int brl_resume(struct goodix_ts_core *cd)
 int brl_gesture(struct goodix_ts_core *cd, int gesture_type)
 {
 	struct goodix_ts_cmd cmd;
+	int ret;
+
+	if (goodix_m2481_is_device(cd->bus->dev->of_node))
+		return goodix_m2481_send_gesture(cd, gesture_type);
 
 	if (cd->bus->ic_type == IC_TYPE_BERLIN_A)
 		cmd.cmd = GOODIX_GESTURE_CMD_BA;
@@ -334,7 +330,9 @@ int brl_gesture(struct goodix_ts_core *cd, int gesture_type)
 		cmd.cmd = GOODIX_GESTURE_CMD;
 	cmd.len = 5;
 	cmd.data[0] = gesture_type;
-	if (cd->hw_ops->send_cmd(cd, &cmd))
+
+	ret = cd->hw_ops->send_cmd(cd, &cmd);
+	if (ret)
 		ts_err("failed send gesture cmd");
 
 	return 0;
@@ -404,6 +402,8 @@ static int brl_send_cmd(struct goodix_ts_core *cd,
 	struct goodix_ic_info_misc *misc = &cd->ic_info.misc;
 	struct goodix_ts_hw_ops *hw_ops = cd->hw_ops;
 
+	mutex_lock(&cd->cmd_lock);
+
 	cmd->state = 0;
 	cmd->ack = 0;
 	goodix_append_checksum(&(cmd->buf[2]), cmd->len - 2,
@@ -416,7 +416,7 @@ static int brl_send_cmd(struct goodix_ts_core *cd,
 				    cmd->buf, sizeof(*cmd));
 		if (ret < 0) {
 			ts_err("failed write command");
-			return ret;
+			goto out;
 		}
 		for (i = 0; i < GOODIX_CMD_RETRY; i++) {
 			/* check command result */
@@ -424,13 +424,14 @@ static int brl_send_cmd(struct goodix_ts_core *cd,
 				cmd_ack.buf, sizeof(cmd_ack));
 			if (ret < 0) {
 				ts_err("failed read command ack, %d", ret);
-				return ret;
+				goto out;
 			}
 			ts_debug("cmd ack data %*ph",
 				 (int)sizeof(cmd_ack), cmd_ack.buf);
 			if (cmd_ack.ack == CMD_ACK_OK) {
 				msleep(40); // wait for cmd response
-				return 0;
+				ret = 0;
+				goto out;
 			}
 			if (cmd_ack.ack == CMD_ACK_BUSY ||
 				cmd_ack.ack == 0x00) {
@@ -444,7 +445,11 @@ static int brl_send_cmd(struct goodix_ts_core *cd,
 		}
 	}
 	ts_err("failed get valid cmd ack");
-	return -EINVAL;
+	ret = -EINVAL;
+
+out:
+	mutex_unlock(&cd->cmd_lock);
+	return ret;
 }
 
 #pragma  pack(1)

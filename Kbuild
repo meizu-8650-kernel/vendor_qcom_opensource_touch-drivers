@@ -150,6 +150,7 @@ ifeq ($(CONFIG_TOUCHSCREEN_GOODIX_BRL), y)
 
 	goodix_ts-y := \
 		 ./goodix_berlin_driver/goodix_ts_core.o \
+		 ./goodix_berlin_driver/goodix_m2481.o \
 		 ./goodix_berlin_driver/goodix_brl_hw.o \
 		 ./goodix_berlin_driver/goodix_cfg_bin.o \
 		 ./goodix_berlin_driver/goodix_ts_utils.o \
