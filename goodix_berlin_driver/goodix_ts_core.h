@@ -32,6 +32,7 @@
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/completion.h>
+#include <linux/wait.h>
 #include <linux/of_irq.h>
 #if IS_ENABLED(CONFIG_OF)
 #include <linux/of_gpio.h>
@@ -426,6 +427,8 @@ struct goodix_bus_interface {
 	int bus_type;
 	int ic_type;
 	struct device *dev;
+	wait_queue_head_t pm_resume_wait;
+	bool pm_ready;
 	int (*read)(struct device *dev, unsigned int addr,
 			unsigned char *data, unsigned int len);
 	int (*write)(struct device *dev, unsigned int addr,

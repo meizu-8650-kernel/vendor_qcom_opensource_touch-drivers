@@ -16,6 +16,7 @@
   *
   */
 #include <linux/version.h>
+#include <linux/jiffies.h>
 #include <linux/fs.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -2413,6 +2414,15 @@ static int goodix_ts_get_irq_num(void *data)
 static irqreturn_t  goodix_irq_handler(int irq, void *data)
 {
 	struct goodix_ts_core *core_data = data;
+	struct goodix_bus_interface *bus = core_data->bus;
+
+	if (bus->bus_type == GOODIX_BUS_TYPE_SPI &&
+	    goodix_m2481_is_device(bus->dev->of_node) &&
+	    !wait_event_timeout(bus->pm_resume_wait, READ_ONCE(bus->pm_ready),
+				msecs_to_jiffies(300))) {
+		dev_err_ratelimited(bus->dev, "Timed out waiting for SPI resume\n");
+		return IRQ_HANDLED;
+	}
 
 	if (!mutex_trylock(&core_data->tui_transition_lock))
 		return IRQ_HANDLED;

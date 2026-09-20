@@ -16,6 +16,7 @@
   */
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/pm.h>
 #include <linux/spi/spi.h>
 #include <linux/version.h>
 
@@ -221,6 +222,9 @@ static int goodix_spi_probe(struct spi_device *spi)
 	goodix_spi_bus[idx].ic_type = ret;
 	goodix_spi_bus[idx].bus_type = GOODIX_BUS_TYPE_SPI;
 	goodix_spi_bus[idx].dev = &spi->dev;
+	init_waitqueue_head(&goodix_spi_bus[idx].pm_resume_wait);
+	WRITE_ONCE(goodix_spi_bus[idx].pm_ready, true);
+	spi_set_drvdata(spi, &goodix_spi_bus[idx]);
 	if (goodix_spi_bus[idx].ic_type == IC_TYPE_BERLIN_A)
 		goodix_spi_bus[idx].read = goodix_spi_read_bra;
 	else
@@ -297,11 +301,37 @@ static const struct spi_device_id spi_id_table[] = {
 	{},
 };
 
+static int goodix_spi_suspend(struct device *dev)
+{
+	struct goodix_bus_interface *bus = dev_get_drvdata(dev);
+
+	if (goodix_m2481_is_device(dev->of_node))
+		WRITE_ONCE(bus->pm_ready, false);
+
+	return 0;
+}
+
+static int goodix_spi_resume(struct device *dev)
+{
+	struct goodix_bus_interface *bus = dev_get_drvdata(dev);
+
+	if (goodix_m2481_is_device(dev->of_node)) {
+		WRITE_ONCE(bus->pm_ready, true);
+		wake_up_all(&bus->pm_resume_wait);
+	}
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(goodix_spi_pm_ops, goodix_spi_suspend,
+			      goodix_spi_resume);
+
 static struct spi_driver goodix_spi_driver = {
 	.driver = {
 		.name = TS_DRIVER_NAME,
 		//.owner = THIS_MODULE,
 		.of_match_table = spi_matchs,
+		.pm = pm_sleep_ptr(&goodix_spi_pm_ops),
 	},
 	.id_table = spi_id_table,
 	.probe = goodix_spi_probe,
