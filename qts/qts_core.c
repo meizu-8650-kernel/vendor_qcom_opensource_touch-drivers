@@ -1703,6 +1703,12 @@ static void qts_panel_notifier_callback(enum panel_event_notifier_tag tag,
 				qts_ts_resume(qts_data);
 		}
 		break;
+	case DRM_PANEL_EVENT_BLANK_LP:
+		if (!of_property_read_bool(qts_data->dp, "qts,suspend-on-lp")) {
+			pr_debug("received lp event\n");
+			break;
+		}
+		fallthrough;
 	case DRM_PANEL_EVENT_BLANK:
 		if (notification->notif_data.early_trigger) {
 #ifdef CONFIG_ARCH_QTI_VM
@@ -1720,9 +1726,6 @@ static void qts_panel_notifier_callback(enum panel_event_notifier_tag tag,
 		} else {
 			pr_debug("suspend notification post commit\n");
 		}
-		break;
-	case DRM_PANEL_EVENT_BLANK_LP:
-		pr_debug("received lp event\n");
 		break;
 	case DRM_PANEL_EVENT_FPS_CHANGE:
 		pr_debug("Received fps change old fps:%d new fps:%d\n",
